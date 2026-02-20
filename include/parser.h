@@ -28,7 +28,6 @@ typedef struct {
  *  - missing file after <, >, 2>
  *  - missing command after pipe
  *  - empty command between pipes
- * etc. :contentReference[oaicite:2]{index=2}
  *
  * Note: command existence is NOT checked here (execvp will decide at runtime).
  */

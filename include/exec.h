@@ -13,10 +13,10 @@
  * Runtime errors include:
  *  - input file open failure => "File not found."
  *  - execvp failure => "Command not found." or
- *    "Command not found in pipe sequence." :contentReference[oaicite:3]{index=3}
+ *    "Command not found in pipe sequence." 
  *
  * Waiting behavior:
- *  - must wait for the last process in the pipeline before prompting again :contentReference[oaicite:4]{index=4}
+ *  - must wait for the last process in the pipeline before prompting again 
  */
 int execute_pipeline(const Pipeline *p);
 
