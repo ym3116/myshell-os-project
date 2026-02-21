@@ -13,8 +13,8 @@ typedef struct {
 
 // Full pipeline: cmd0 | cmd1 | cmd2 ...
 typedef struct {
-    Command *cmds;      // dynamic array of commands
-    int      n_cmds;    // number of commands (>=1 on success)
+    Command *cmds;      // a pointer to a dynamically allocated array of Command structs
+    int      n_cmds;    // the number of commands in the pipeline
 } Pipeline;
 
 /**
