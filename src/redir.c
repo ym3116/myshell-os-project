@@ -1,7 +1,7 @@
 /* =============================================================================
  * src/redir.c  –  File-descriptor redirection helpers
  *
- * Responsibility (Person B):
+ * Responsibility:
  *   Implements apply_redirections(), which is called inside each child
  *   process after fork() but before execvp().  It translates the in_file,
  *   out_file, and err_file fields of a Command struct into actual file-

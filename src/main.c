@@ -58,7 +58,7 @@ int main(void) {
             continue;
         }
 
-        // Execute (not implemented yet, will be implemented by Utidi)
+        // Execute (validated) pipeline
         (void)execute_pipeline(&pl);
 
         // Cleanup

@@ -1,7 +1,7 @@
 /* =============================================================================
  * src/exec.c  –  Pipeline execution engine
  *
- * Responsibility (Person B):
+ * Responsibility:
  *   Implements execute_pipeline(), the single entry point called by main()
  *   once parse_line() has validated the user's input and populated a Pipeline
  *   struct.  This file orchestrates the three OS-level phases:
