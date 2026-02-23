@@ -1,24 +1,4 @@
-/* =============================================================================
- * src/redir.c  –  File-descriptor redirection helpers
- *
- * Responsibility:
- *   Implements apply_redirections(), which is called inside each child
- *   process after fork() but before execvp().  It translates the in_file,
- *   out_file, and err_file fields of a Command struct into actual file-
- *   descriptor operations using open(2) and dup2(2).
- *
- * Design notes:
- *   - Only fields that are non-NULL trigger a redirection; NULL means
- *     "use the inherited descriptor", i.e. no change.
- *   - dup2() atomically replaces the target descriptor (STDIN_FILENO,
- *     STDOUT_FILENO, STDERR_FILENO) with a duplicate of the opened fd.
- *     The original fd from open() is closed immediately after dup2()
- *     so it does not leak into the exec'd program.
- *   - Output files are created if they do not exist and truncated to zero
- *     length if they do (matching standard shell '>' semantics).
- *   - All error messages go to stderr and use the exact phrasing required
- *     by the project specification.
- * ============================================================================= */
+// src/redir.c  –  File-descriptor redirection helpers
 
 #define _POSIX_C_SOURCE 200809L
 
