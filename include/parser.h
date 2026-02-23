@@ -17,26 +17,10 @@ typedef struct {
     int      n_cmds;    // the number of commands in the pipeline
 } Pipeline;
 
-/**
- * Parse and validate a command line.
- *
- * Returns:
- *  0 on success and fills `out`
- *  nonzero on syntax/validation error and writes message to `err`
- *
- * Parser should catch "shell syntax" issues required by spec:
- *  - missing file after <, >, 2>
- *  - missing command after pipe
- *  - empty command between pipes
- *
- * Note: command existence is NOT checked here (execvp will decide at runtime).
- */
+
 int parse_line(const char *line, Pipeline *out, char *err, size_t err_sz);
 
-/**
- * Free all memory allocated inside `Pipeline` by parse_line().
- * Safe to call even if parsing failed partially.
- */
+
 void free_pipeline(Pipeline *p);
 
 #endif
