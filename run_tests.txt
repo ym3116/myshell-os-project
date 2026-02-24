@@ -1,0 +1,15 @@
+pwd
+echo hello world
+cat input.txt | grep a
+cat input.txt | grep a | sort
+cat < input.txt
+sort < input.txt > sorted_output.txt
+cat sorted_output.txt
+cat < input.txt | grep a > filtered.txt
+cat filtered.txt
+cat <
+echo hello >
+ls |
+invalid_command_xyz
+cat < nonexistent.txt
+exit
