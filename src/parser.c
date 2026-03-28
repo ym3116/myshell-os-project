@@ -150,8 +150,6 @@ static int tokenize(const char *line, char ***tokens_out, int *ntok_out,
                 } else if (isspace((unsigned char)*p) ||
                            *p == '<' || *p == '>' || *p == '|') {
                     break; // end of word outside quotes
-                } else if (*p == '2' && *(p + 1) == '>') {
-                    break; // 2> operator
                 } else {
                     if (buf_len + 1 >= buf_cap) {
                         buf_cap *= 2;
