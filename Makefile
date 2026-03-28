@@ -2,7 +2,7 @@ CC      = gcc
 CFLAGS  = -Wall -Wextra -g -Iinclude
 LDFLAGS =
 
-SRC     = $(wildcard src/*.c)
+SRC     = src/main.c src/exec.c src/parser.c src/pipe.c src/redir.c
 OBJ     = $(SRC:.c=.o)
 BIN     = myshell
 

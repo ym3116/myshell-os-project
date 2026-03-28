@@ -124,17 +124,59 @@ static int tokenize(const char *line, char ***tokens_out, int *ntok_out,
             continue;
         }
 
-        // 4) Otherwise: read a "word" token until whitespace or operator
-        const char *start = p;
-        while (*p &&
-               !isspace((unsigned char)*p) &&
-               *p != '<' && *p != '>' && *p != '|' ) {
-            // stop at "2>" if we see it starting
-            if (*p == '2' && *(p + 1) == '>') break;
-            p++;
-        }
+        // 4) Otherwise: read a "word" token with quote handling.
+        // Quoted regions (single or double quotes) are stripped of their
+        // delimiters, preserve internal spaces, and suppress operator recognition.
+        {
+            int buf_cap = 64;
+            int buf_len = 0;
+            char *buf = malloc((size_t)buf_cap);
+            if (!buf) goto oom;
 
-        if (push_token(&tokens, &ntok, &cap, start, (int)(p - start)) != 0) goto oom;
+            while (*p) {
+                if (*p == '"' || *p == '\'') {
+                    // Enter quoted region: consume until matching closing quote
+                    char quote = *p++;
+                    while (*p && *p != quote) {
+                        if (buf_len + 1 >= buf_cap) {
+                            buf_cap *= 2;
+                            char *tmp = realloc(buf, (size_t)buf_cap);
+                            if (!tmp) { free(buf); goto oom; }
+                            buf = tmp;
+                        }
+                        buf[buf_len++] = *p++;
+                    }
+                    if (*p == quote) p++; // consume closing quote
+                } else if (isspace((unsigned char)*p) ||
+                           *p == '<' || *p == '>' || *p == '|') {
+                    break; // end of word outside quotes
+                } else if (*p == '2' && *(p + 1) == '>') {
+                    break; // 2> operator
+                } else {
+                    if (buf_len + 1 >= buf_cap) {
+                        buf_cap *= 2;
+                        char *tmp = realloc(buf, (size_t)buf_cap);
+                        if (!tmp) { free(buf); goto oom; }
+                        buf = tmp;
+                    }
+                    buf[buf_len++] = *p++;
+                }
+            }
+            buf[buf_len] = '\0';
+
+            if (buf_len > 0) {
+                if (ntok >= cap) {
+                    int newcap = (cap == 0) ? 8 : (cap * 2);
+                    char **tmp = realloc(tokens, (size_t)newcap * sizeof(char *));
+                    if (!tmp) { free(buf); goto oom; }
+                    tokens = tmp;
+                    cap = newcap;
+                }
+                tokens[ntok++] = buf;
+            } else {
+                free(buf);
+            }
+        }
     }
 
     *tokens_out = tokens;
