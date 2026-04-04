@@ -138,13 +138,32 @@ static int tokenize(const char *line, char ***tokens_out, int *ntok_out,
                     // Enter quoted region: consume until matching closing quote
                     char quote = *p++;
                     while (*p && *p != quote) {
-                        if (buf_len + 1 >= buf_cap) {
+                        // Ensure space for up to 2 chars (escape sequences)
+                        if (buf_len + 2 >= buf_cap) {
                             buf_cap *= 2;
                             char *tmp = realloc(buf, (size_t)buf_cap);
                             if (!tmp) { free(buf); goto oom; }
                             buf = tmp;
                         }
-                        buf[buf_len++] = *p++;
+                        // Inside double quotes, process backslash escape sequences
+                        // so that \n, \t, \\, \" are expanded to their real characters.
+                        // Single-quoted strings preserve everything literally (no escapes).
+                        if (quote == '"' && *p == '\\' && *(p + 1) != '\0') {
+                            p++; // skip the backslash
+                            switch (*p) {
+                                case 'n':  buf[buf_len++] = '\n'; p++; break; // newline
+                                case 't':  buf[buf_len++] = '\t'; p++; break; // tab
+                                case '\\': buf[buf_len++] = '\\'; p++; break; // literal backslash
+                                case '"':  buf[buf_len++] = '"';  p++; break; // literal quote
+                                default:
+                                    // Unknown escape: keep backslash + the character as-is
+                                    buf[buf_len++] = '\\';
+                                    buf[buf_len++] = *p++;
+                                    break;
+                            }
+                        } else {
+                            buf[buf_len++] = *p++;
+                        }
                     }
                     if (*p == quote) p++; // consume closing quote
                 } else if (isspace((unsigned char)*p) ||

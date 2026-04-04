@@ -14,8 +14,9 @@
 
 #define _POSIX_C_SOURCE 200809L
 
-#include <stdio.h>      // perror(), fprintf()
+#include <stdio.h>      // perror(), fprintf(), printf()
 #include <stdlib.h>     // malloc(), free(), exit()
+#include <string.h>     // strcmp()
 #include <unistd.h>     // fork(), execvp(), dup2(), close()
 #include <sys/wait.h>   // waitpid(), WIFEXITED, WEXITSTATUS
 #include "exec.h"       
@@ -96,6 +97,28 @@ int execute_pipeline(const Pipeline *p)
             if (apply_redirections(&p->cmds[i]) < 0) {
                 /* apply_redirections already printed the error message */
                 exit(1);
+            }
+
+            // Built-in echo: handle the -e flag ourselves so that escape
+            // sequences work consistently across all platforms (macOS's
+            // /bin/echo ignores -e and prints it as text).
+            // Since our parser already expands \n,\t,\\ inside double quotes
+            // into real characters, we only need to skip the -e flag here.
+            if (strcmp(p->cmds[i].argv[0], "echo") == 0) {
+                int start = 1;
+                // Skip -e flag if present (escapes already expanded by parser)
+                if (p->cmds[i].argv[1] &&
+                    strcmp(p->cmds[i].argv[1], "-e") == 0) {
+                    start = 2;
+                }
+                // Print each argument separated by spaces, then a newline
+                for (int j = start; p->cmds[i].argv[j] != NULL; j++) {
+                    if (j > start) printf(" ");
+                    printf("%s", p->cmds[i].argv[j]);
+                }
+                printf("\n");
+                fflush(stdout);
+                exit(0);
             }
 
             // Execution

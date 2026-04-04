@@ -218,6 +218,11 @@ static void handle_client(int client_fd, const char *client_ip)
             printf("[OUTPUT] Sending output to client:\n");
             if (out_len > 0) {
                 printf("%s", output);
+            } else {
+                /* Output is empty — command may have redirected output to a file,
+                 * produced no output, or failed silently. Log this so the server
+                 * terminal makes it clear something was sent (zero bytes). */
+                printf("(no output — may have been redirected to a file)\n");
             }
         }
         fflush(stdout);
