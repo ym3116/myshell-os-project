@@ -1,9 +1,12 @@
 /* =============================================================================
- * src/server.c  –  Phase 2 Remote Shell Server
+ * src/server.c  –  Phase 3 Remote Shell Server (Multithreaded)
  *
  * This server listens on a TCP port and executes shell commands received from
- * a connected client. It uses the Phase 1 shell engine (parser + executor) to
- * run commands and sends the output back over the socket.
+ * multiple simultaneous clients. Each accepted connection is handed off to a
+ * dedicated POSIX thread so that clients are served concurrently.
+ *
+ * It uses the Phase 1 shell engine (parser + executor) to run commands and
+ * sends the output back over the socket.
  *
  * Protocol:
  *   Client sends: null-terminated command string
@@ -27,16 +30,56 @@
 #include <netinet/in.h>   /* sockaddr_in, htonl, htons */
 #include <arpa/inet.h>    /* inet_ntoa – for printing client IP */
 
+/* POSIX threads */
+#include <pthread.h>
+
 #include "parser.h"
 #include "exec.h"
 
 /* ---------------------------------------------------------------------------
  * Constants
  * --------------------------------------------------------------------------- */
-#define BACKLOG 1              /* max queued connections before accept() */
+#define BACKLOG 10             /* max queued connections before accept() */
 #define READ_CHUNK 4096        /* buffer size for reading command output */
 #define MAX_OUTPUT (1024*1024) /* max output per command (1 MB) */
 #define MAX_CMD 4096           /* max command length from client */
+
+/* ---------------------------------------------------------------------------
+ * Globals
+ *
+ * counter_mutex: protects client_counter so that each new connection gets a
+ *                unique, monotonically-increasing client number even when
+ *                multiple threads call accept() simultaneously.
+ *
+ * print_mutex:   serialises all printf/fflush calls across threads so that
+ *                log lines from different clients do not interleave on stdout.
+ *
+ * client_counter: running total of accepted connections; used to assign each
+ *                 client a human-readable "#N" identifier.
+ * --------------------------------------------------------------------------- */
+static pthread_mutex_t counter_mutex = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t print_mutex   = PTHREAD_MUTEX_INITIALIZER;
+static int             client_counter = 0;
+
+/* ---------------------------------------------------------------------------
+ * ClientArgs
+ *
+ * Heap-allocated struct passed to each client thread.  All fields are filled
+ * in by main() before pthread_create() so the thread has everything it needs
+ * without touching shared state.
+ *
+ * Fields:
+ *   client_fd   – connected socket file descriptor
+ *   client_ip   – dotted-decimal IP string of the remote peer
+ *   client_port – remote port number (host byte order)
+ *   client_num  – unique sequential client identifier assigned by main()
+ * --------------------------------------------------------------------------- */
+typedef struct {
+    int  client_fd;
+    char client_ip[INET_ADDRSTRLEN];
+    int  client_port;
+    int  client_num;
+} ClientArgs;
 
 
 /* ---------------------------------------------------------------------------
@@ -142,16 +185,28 @@ static int send_all(int fd, const void *buf, size_t len)
 /* ---------------------------------------------------------------------------
  * handle_client() - Main loop for serving one connected client
  *
- * Receives commands, executes them, and sends output back until client
- * disconnects or sends "exit".
+ * Receives commands over the socket, executes them through the Phase 1 shell
+ * engine, and sends output back using the 4-byte length-prefix protocol.
+ * Runs entirely inside a dedicated thread; closes client_fd before returning.
+ *
+ * All printf/fflush pairs are wrapped with print_mutex so that log lines from
+ * concurrent client threads do not interleave on stdout.
  * --------------------------------------------------------------------------- */
-static void handle_client(int client_fd, const char *client_ip)
+static void handle_client(ClientArgs *info)
 {
-    (void)client_ip;  /* suppress unused warning - we use generic messages */
+    /* Extract connection details from the argument struct for convenience */
+    int         client_fd   = info->client_fd;
+    const char *client_ip   = info->client_ip;
+    int         client_port = info->client_port;
+    int         client_num  = info->client_num;
+
     char cmd_buf[MAX_CMD];
 
+    /* Log that this client has connected and which thread is handling it */
+    pthread_mutex_lock(&print_mutex);
     printf("[INFO] Client connected.\n");
     fflush(stdout);
+    pthread_mutex_unlock(&print_mutex);
 
     while (1) {
         /* Receive command from client */
@@ -163,29 +218,37 @@ static void handle_client(int client_fd, const char *client_ip)
             if (n < 0) {
                 perror("[ERROR] recv failed");
             }
+            pthread_mutex_lock(&print_mutex);
             printf("[INFO] Client disconnected.\n");
             fflush(stdout);
+            pthread_mutex_unlock(&print_mutex);
             break;
         }
 
         cmd_buf[n] = '\0';
 
         /* Log received command */
+        pthread_mutex_lock(&print_mutex);
         printf("[RECEIVED] Received command: \"%s\" from client.\n", cmd_buf);
         fflush(stdout);
+        pthread_mutex_unlock(&print_mutex);
 
         /* Handle exit command */
         if (strcmp(cmd_buf, "exit") == 0) {
             uint32_t zero = 0;
             send_all(client_fd, &zero, sizeof(zero));
+            pthread_mutex_lock(&print_mutex);
             printf("[INFO] Client requested exit.\n");
             fflush(stdout);
+            pthread_mutex_unlock(&print_mutex);
             break;
         }
 
         /* Log execution */
+        pthread_mutex_lock(&print_mutex);
         printf("[EXECUTING] Executing command: \"%s\"\n", cmd_buf);
         fflush(stdout);
+        pthread_mutex_unlock(&print_mutex);
 
         /* Parse the command */
         Pipeline pl;
@@ -199,9 +262,11 @@ static void handle_client(int client_fd, const char *client_ip)
             uint32_t net_len = htonl((uint32_t)msg_len);
             send_all(client_fd, &net_len, sizeof(net_len));
             send_all(client_fd, msg, msg_len);
+            pthread_mutex_lock(&print_mutex);
             printf("[ERROR] Parse error: %s\n", msg);
             printf("[OUTPUT] Sending error message to client: \"%s\"\n", msg);
             fflush(stdout);
+            pthread_mutex_unlock(&print_mutex);
             continue;
         }
 
@@ -211,6 +276,7 @@ static void handle_client(int client_fd, const char *client_ip)
         free_pipeline(&pl);
 
         /* Check if output contains "Command not found" error */
+        pthread_mutex_lock(&print_mutex);
         if (output && (strstr(output, "Command not found") != NULL)) {
             printf("[ERROR] Command not found: \"%s\"\n", cmd_buf);
             printf("[OUTPUT] Sending error message to client: \"%s\"\n", output);
@@ -226,6 +292,7 @@ static void handle_client(int client_fd, const char *client_ip)
             }
         }
         fflush(stdout);
+        pthread_mutex_unlock(&print_mutex);
 
         /* Send output to client using length-prefix protocol */
         uint32_t net_len = htonl((uint32_t)out_len);
@@ -236,13 +303,46 @@ static void handle_client(int client_fd, const char *client_ip)
 
         free(output);
     }
+
+    /* The thread owns client_fd; close it here so main() never has to wait */
+    close(client_fd);
+
+    /* Log final disconnection with the client's identifier */
+    pthread_mutex_lock(&print_mutex);
+    printf("[INFO] Client #%d disconnected.\n", client_num);
+    fflush(stdout);
+    pthread_mutex_unlock(&print_mutex);
+
+    /* Suppress unused-variable warnings for fields the printf strings
+     * don't yet reference — teammate will update the log messages */
+    (void)client_ip;
+    (void)client_port;
+}
+
+
+/* ---------------------------------------------------------------------------
+ * client_thread() - POSIX thread entry point for each client connection
+ *
+ * Unpacks the ClientArgs pointer, calls handle_client(), then frees the
+ * heap-allocated args struct.  Declared as returning void* to match the
+ * pthread_create() signature; always returns NULL.
+ * --------------------------------------------------------------------------- */
+static void *client_thread(void *arg)
+{
+    ClientArgs *info = (ClientArgs *)arg;
+    handle_client(info);  /* runs the full client session, closes client_fd */
+    free(info);           /* release the heap struct allocated in main() */
+    return NULL;
 }
 
 
 /* ---------------------------------------------------------------------------
  * main() - Server entry point
  *
- * Sets up TCP socket, binds to port, and accepts client connections.
+ * Sets up TCP socket, binds to port, and accepts client connections in a
+ * loop.  For each accepted connection a ClientArgs struct is heap-allocated,
+ * filled in, and handed to a new detached thread via pthread_create().
+ * main() never blocks on a client — it loops immediately back to accept().
  * --------------------------------------------------------------------------- */
 int main(int argc, char *argv[])
 {
@@ -296,7 +396,8 @@ int main(int argc, char *argv[])
     printf("[INFO] Server started, waiting for client connections...\n");
     fflush(stdout);
 
-    /* Main accept loop - handle one client at a time */
+    /* Main accept loop - spawn a thread per client so all are served
+     * simultaneously without blocking on any individual connection */
     while (1) {
         struct sockaddr_in client_addr;
         socklen_t client_len = sizeof(client_addr);
@@ -309,12 +410,45 @@ int main(int argc, char *argv[])
             continue;
         }
 
-        char *client_ip = inet_ntoa(client_addr.sin_addr);
-        handle_client(client_fd, client_ip);
+        /* Assign a unique client number under the counter lock so that two
+         * threads racing through accept() cannot receive the same number */
+        pthread_mutex_lock(&counter_mutex);
+        int client_num = ++client_counter;
+        pthread_mutex_unlock(&counter_mutex);
 
-        close(client_fd);
-        printf("[INFO] Connection closed. Waiting for next client...\n");
-        fflush(stdout);
+        /* Heap-allocate ClientArgs — must NOT be a local/stack variable
+         * because main() returns to the top of the loop immediately after
+         * pthread_create(); a stack variable would be clobbered */
+        ClientArgs *args = malloc(sizeof(ClientArgs));
+        if (!args) {
+            /* If we can't allocate memory, reject this connection gracefully */
+            perror("[ERROR] malloc failed for ClientArgs");
+            close(client_fd);
+            continue;
+        }
+
+        /* Fill in connection details before handing the struct to the thread */
+        args->client_fd   = client_fd;
+        args->client_num  = client_num;
+        args->client_port = ntohs(client_addr.sin_port);
+        strncpy(args->client_ip,
+                inet_ntoa(client_addr.sin_addr),
+                INET_ADDRSTRLEN - 1);
+        args->client_ip[INET_ADDRSTRLEN - 1] = '\0';  /* ensure NUL-termination */
+
+        /* Spawn a thread to handle this client */
+        pthread_t tid;
+        if (pthread_create(&tid, NULL, client_thread, args) != 0) {
+            /* Thread creation failed; clean up and try the next connection */
+            perror("[ERROR] pthread_create failed");
+            close(client_fd);
+            free(args);
+            continue;
+        }
+
+        /* Detach the thread so its resources are reclaimed automatically
+         * when it exits — main() never calls pthread_join() */
+        pthread_detach(tid);
     }
 
     close(server_fd);

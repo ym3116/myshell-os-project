@@ -1,6 +1,6 @@
 CC      = gcc
 CFLAGS  = -Wall -Wextra -g -Iinclude
-LDFLAGS =
+LDFLAGS = -lpthread
 
 # ---------------------------------------------------------------------------
 # Shared object files: the Phase 1 shell logic (parser, executor, pipes,
