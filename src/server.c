@@ -202,9 +202,10 @@ static void handle_client(ClientArgs *info)
 
     char cmd_buf[MAX_CMD];
 
-    /* Log that this client has connected and which thread is handling it */
+    /* Log the new connection with IP, port, and assigned thread identifier */
     pthread_mutex_lock(&print_mutex);
-    printf("[INFO] Client connected.\n");
+    printf("[INFO] Client #%d connected from %s:%d. Assigned to Thread-%d.\n",
+           client_num, client_ip, client_port, client_num);
     fflush(stdout);
     pthread_mutex_unlock(&print_mutex);
 
@@ -218,18 +219,16 @@ static void handle_client(ClientArgs *info)
             if (n < 0) {
                 perror("[ERROR] recv failed");
             }
-            pthread_mutex_lock(&print_mutex);
-            printf("[INFO] Client disconnected.\n");
-            fflush(stdout);
-            pthread_mutex_unlock(&print_mutex);
+            /* Client closed the connection without sending "exit" */
             break;
         }
 
         cmd_buf[n] = '\0';
 
-        /* Log received command */
+        /* Log the received command with client identity */
         pthread_mutex_lock(&print_mutex);
-        printf("[RECEIVED] Received command: \"%s\" from client.\n", cmd_buf);
+        printf("[RECEIVED] [Client #%d - %s:%d] Received command: \"%s\"\n",
+               client_num, client_ip, client_port, cmd_buf);
         fflush(stdout);
         pthread_mutex_unlock(&print_mutex);
 
@@ -238,15 +237,17 @@ static void handle_client(ClientArgs *info)
             uint32_t zero = 0;
             send_all(client_fd, &zero, sizeof(zero));
             pthread_mutex_lock(&print_mutex);
-            printf("[INFO] Client requested exit.\n");
+            printf("[INFO] [Client #%d - %s:%d] Client requested disconnect. Closing connection.\n",
+                   client_num, client_ip, client_port);
             fflush(stdout);
             pthread_mutex_unlock(&print_mutex);
             break;
         }
 
-        /* Log execution */
+        /* Log which client's command is now being executed */
         pthread_mutex_lock(&print_mutex);
-        printf("[EXECUTING] Executing command: \"%s\"\n", cmd_buf);
+        printf("[EXECUTING] [Client #%d - %s:%d] Executing command: \"%s\"\n",
+               client_num, client_ip, client_port, cmd_buf);
         fflush(stdout);
         pthread_mutex_unlock(&print_mutex);
 
@@ -263,8 +264,10 @@ static void handle_client(ClientArgs *info)
             send_all(client_fd, &net_len, sizeof(net_len));
             send_all(client_fd, msg, msg_len);
             pthread_mutex_lock(&print_mutex);
-            printf("[ERROR] Parse error: %s\n", msg);
-            printf("[OUTPUT] Sending error message to client: \"%s\"\n", msg);
+            printf("[ERROR] [Client #%d - %s:%d] Parse error: %s\n",
+                   client_num, client_ip, client_port, msg);
+            printf("[OUTPUT] [Client #%d - %s:%d] Sending error message to client: \"%s\"\n",
+                   client_num, client_ip, client_port, msg);
             fflush(stdout);
             pthread_mutex_unlock(&print_mutex);
             continue;
@@ -278,16 +281,18 @@ static void handle_client(ClientArgs *info)
         /* Check if output contains "Command not found" error */
         pthread_mutex_lock(&print_mutex);
         if (output && (strstr(output, "Command not found") != NULL)) {
-            printf("[ERROR] Command not found: \"%s\"\n", cmd_buf);
-            printf("[OUTPUT] Sending error message to client: \"%s\"\n", output);
+            printf("[ERROR] [Client #%d - %s:%d] Command not found: \"%s\"\n",
+                   client_num, client_ip, client_port, cmd_buf);
+            printf("[OUTPUT] [Client #%d - %s:%d] Sending error message to client: \"%s\"\n",
+                   client_num, client_ip, client_port, output);
         } else {
-            printf("[OUTPUT] Sending output to client:\n");
+            printf("[OUTPUT] [Client #%d - %s:%d] Sending output to client:\n",
+                   client_num, client_ip, client_port);
             if (out_len > 0) {
                 printf("%s", output);
             } else {
-                /* Output is empty — command may have redirected output to a file,
-                 * produced no output, or failed silently. Log this so the server
-                 * terminal makes it clear something was sent (zero bytes). */
+                /* Command produced no output — may have redirected to a file or
+                 * completed silently (e.g. cd, mkdir). Send zero-length response. */
                 printf("(no output — may have been redirected to a file)\n");
             }
         }
@@ -312,11 +317,6 @@ static void handle_client(ClientArgs *info)
     printf("[INFO] Client #%d disconnected.\n", client_num);
     fflush(stdout);
     pthread_mutex_unlock(&print_mutex);
-
-    /* Suppress unused-variable warnings for fields the printf strings
-     * don't yet reference — teammate will update the log messages */
-    (void)client_ip;
-    (void)client_port;
 }
 
 
