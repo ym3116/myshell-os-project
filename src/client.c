@@ -176,7 +176,7 @@ int main(int argc, char *argv[])
      * Establish TCP connection to the server
      * ------------------------------------------------------------------ */
     int sock = connect_to_server(host, port);
-    printf("[Client] Connected to server %s:%d\n", host, port);
+    printf("Connected to a server\n");
     fflush(stdout);
 
     /* ------------------------------------------------------------------
@@ -188,7 +188,7 @@ int main(int argc, char *argv[])
 
     while (!done) {
         /* Print the shell prompt */
-        printf("$ ");
+        printf(">>> ");
         fflush(stdout);
 
         /* Read a line from the user.
@@ -237,42 +237,45 @@ int main(int argc, char *argv[])
         }
 
         /* ----------------------------------------------------------------
-         * Receive the 4-byte length header from the server.
-         * The server always sends this, even for empty output (len = 0).
+         * Streaming receive loop.
+         *
+         * The server sends one or more [uint32_t length][bytes] packets,
+         * terminated by a zero-length packet.  This works for both shell
+         * commands (one data packet + terminator) and program tasks
+         * (many data packets + terminator streamed over time).
          * ---------------------------------------------------------------- */
-        uint32_t net_len = 0;
-        if (recv_all(sock, &net_len, sizeof(net_len)) < 0) {
-            fprintf(stderr, "[Client] Server disconnected unexpectedly.\n");
-            break;
-        }
+        char recv_buf[RECV_BUF + 1];
 
-        /* Convert from network byte order to host byte order */
-        uint32_t out_len = ntohl(net_len);
-
-        /* ----------------------------------------------------------------
-         * Receive and print the output in chunks.
-         * We do NOT allocate one giant buffer; instead we receive RECV_BUF
-         * bytes at a time and print each chunk immediately.  This keeps
-         * memory usage bounded even for large command outputs.
-         * ---------------------------------------------------------------- */
-        uint32_t remaining = out_len;
-        char     recv_buf[RECV_BUF + 1];
-
-        while (remaining > 0) {
-            uint32_t to_read = (remaining < RECV_BUF) ? remaining : RECV_BUF;
-            ssize_t  n       = recv(sock, recv_buf, to_read, 0);
-            if (n <= 0) {
-                fprintf(stderr, "[Client] Connection lost while receiving output.\n");
+        while (1) {
+            uint32_t net_len = 0;
+            if (recv_all(sock, &net_len, sizeof(net_len)) < 0) {
+                fprintf(stderr, "[Client] Server disconnected unexpectedly.\n");
                 done = 1;
                 break;
             }
-            recv_buf[n] = '\0';
-            printf("%s", recv_buf);    /* print chunk immediately */
-            remaining -= (uint32_t)n;
-        }
 
-        /* Ensure the last chunk's output is flushed to the terminal */
-        fflush(stdout);
+            uint32_t pkt_len = ntohl(net_len);
+
+            /* Zero-length packet = end of response for this command */
+            if (pkt_len == 0) break;
+
+            /* Receive and print this packet's bytes */
+            uint32_t remaining = pkt_len;
+            while (remaining > 0) {
+                uint32_t to_read = (remaining < RECV_BUF) ? remaining : RECV_BUF;
+                ssize_t  n = recv(sock, recv_buf, to_read, 0);
+                if (n <= 0) {
+                    fprintf(stderr, "[Client] Connection lost while receiving output.\n");
+                    done = 1;
+                    break;
+                }
+                recv_buf[n] = '\0';
+                printf("%s", recv_buf);
+                fflush(stdout);
+                remaining -= (uint32_t)n;
+            }
+            if (done) break;
+        }
     }
 
     /* ------------------------------------------------------------------
