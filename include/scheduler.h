@@ -62,6 +62,7 @@ typedef struct Task {
     int        out_pipe[2];      /* pipe: child stdout/stderr → scheduler      */
     TaskState  state;            /* current scheduling state                   */
     time_t     arrival_time;     /* for FCFS tie-breaking                      */
+    size_t     total_bytes_sent; /* total output bytes streamed to client      */
     struct Task *next;           /* intrusive linked-list pointer              */
 } Task;
 

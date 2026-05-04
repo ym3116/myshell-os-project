@@ -33,11 +33,17 @@ int main(int argc, char *argv[])
      * immediately rather than being held in the stdio buffer —
      * critical for the scheduler to forward output in real time.
      */
-    for (int i = 0; i < n; i++) {
+    /* Loop from 0 to n inclusive (n+1 prints), sleep only between iterations
+     * so the burst time stays n seconds while printing Demo 0/n through Demo n/n.
+     * A trailing newline is printed after the last line to match the expected
+     * byte count (e.g. 134 bytes for n=12). */
+    for (int i = 0; i <= n; i++) {
         printf("Demo %d/%d\n", i, n);
         fflush(stdout);
-        sleep(1);
+        if (i < n) sleep(1);
     }
+    printf("\n");
+    fflush(stdout);
 
     return 0;
 }

@@ -59,8 +59,8 @@ pthread_mutex_t g_print_mutex = PTHREAD_MUTEX_INITIALIZER;
 #define CLR_BLUE    "\033[34m"   /* created  */
 #define CLR_GREEN   "\033[32m"   /* started  */
 #define CLR_RED     "\033[31m"   /* ended    */
-#define CLR_CYAN    "\033[36m"   /* waiting  */
-#define CLR_YELLOW  "\033[33m"   /* running  */
+#define CLR_YELLOW  "\033[33m"   /* waiting  */
+#define CLR_LGREEN  "\033[92m"   /* running  */
 
 /* Queue head (singly linked list, protected by g_queue_mutex) */
 static Task           *g_queue_head   = NULL;
@@ -83,10 +83,12 @@ static Task           *g_running_task = NULL;
  * anti-consecutive rule: the same task cannot run twice in a row. */
 static int             g_last_run_id  = -1;
 
-/* Execution-timeline string (e.g. "0)-P5-(3)-P6-(1)-...") printed at end */
-#define TIMELINE_MAX 4096
-static char  g_timeline[TIMELINE_MAX] = "0)";
-static int   g_timeline_time = 0;   /* cumulative wall-clock seconds */
+/* Execution timeline: stores (client_num, cumulative_time) per quantum */
+#define TIMELINE_MAX_ENTRIES 512
+typedef struct { int client_num; int cum_time; } TimelineEntry;
+static TimelineEntry g_timeline_entries[TIMELINE_MAX_ENTRIES];
+static int           g_timeline_count = 0;
+static int           g_timeline_time  = 0;  /* cumulative wall-clock seconds */
 
 /* Forward declaration so forward_output_for() can call check_preemption() */
 static int check_preemption(Task *running);
@@ -121,17 +123,16 @@ static void log_print(const char *fmt, ...)
 }
 
 /* ---------------------------------------------------------------------------
- * timeline_append() – append one scheduler event to the summary string
+ * timeline_append() – record one quantum's worth of execution
  * --------------------------------------------------------------------------- */
 static void timeline_append(int client_num, int elapsed)
 {
     g_timeline_time += elapsed;
-    char entry[64];
-    snprintf(entry, sizeof(entry), "-P%d-(%d)", client_num, g_timeline_time);
-
-    /* Append safely; silently truncate if buffer is full */
-    size_t remaining = TIMELINE_MAX - strlen(g_timeline) - 1;
-    strncat(g_timeline, entry, remaining);
+    if (g_timeline_count < TIMELINE_MAX_ENTRIES) {
+        g_timeline_entries[g_timeline_count].client_num = client_num;
+        g_timeline_entries[g_timeline_count].cum_time   = g_timeline_time;
+        g_timeline_count++;
+    }
 }
 
 /* ---------------------------------------------------------------------------
@@ -223,8 +224,8 @@ void scheduler_init(void)
     g_running_task = NULL;
     g_last_run_id  = -1;
     g_next_task_id = 1;
-    strncpy(g_timeline, "0)", sizeof(g_timeline) - 1);
-    g_timeline_time = 0;
+    g_timeline_count = 0;
+    g_timeline_time  = 0;
 }
 
 /* ---------------------------------------------------------------------------
@@ -377,6 +378,8 @@ static void run_shell_command(Task *t)
         memcpy(out + total, buf, (size_t)n);
         total += (size_t)n;
     }
+    /* Append a trailing newline so the client displays a blank line after output */
+    if (total + 1 < capacity) out[total++] = '\n';
     out[total] = '\0';
     close(pipefd[0]);
     waitpid(pid, NULL, 0);
@@ -397,9 +400,6 @@ static void run_shell_command(Task *t)
     log_print("[%d]--- " CLR_RED "ended" CLR_RESET " (%d)\n", t->client_num, t->burst_time);
 
     free(out);
-
-    /* Record in timeline */
-    timeline_append(t->client_num, 0);
 }
 
 /* ---------------------------------------------------------------------------
@@ -458,11 +458,11 @@ static int forward_output_for(Task *t, int max_seconds)
             send_all_fd(t->client_fd, &pkt_len, sizeof(pkt_len));
             send_all_fd(t->client_fd, line_buf, (size_t)buf_pos);
 
+            /* Track total output bytes sent to client */
+            t->total_bytes_sent += (size_t)buf_pos;
+
             buf_pos = 0;
             elapsed++;
-
-            log_print("[%d]--- " CLR_YELLOW "running" CLR_RESET " (%d)\n",
-                      t->client_num, t->remaining_time - elapsed);
 
             /* After each completed second, check if a shorter job arrived.
              * If so, break early so the scheduler can preempt this task. */
@@ -536,7 +536,7 @@ static int run_program_task(Task *t)
     } else {
         /* Resume a previously stopped child */
         kill(t->child_pid, SIGCONT);
-        log_print("[%d]--- " CLR_YELLOW "running" CLR_RESET " (%d)\n", t->client_num, t->remaining_time);
+        log_print("[%d]--- " CLR_LGREEN "running" CLR_RESET " (%d)\n", t->client_num, t->remaining_time);
     }
 
     t->round++;
@@ -559,6 +559,7 @@ static int run_program_task(Task *t)
         uint32_t zero = htonl(0);
         send_all_fd(t->client_fd, &zero, sizeof(zero));
 
+        log_print("[%d]<<< %zu bytes sent\n", t->client_num, t->total_bytes_sent);
         log_print("[%d]--- " CLR_RED "ended" CLR_RESET " (0)\n", t->client_num);
         return 1;  /* done */
     }
@@ -581,11 +582,12 @@ static int run_program_task(Task *t)
         uint32_t zero = htonl(0);
         send_all_fd(t->client_fd, &zero, sizeof(zero));
 
+        log_print("[%d]<<< %zu bytes sent\n", t->client_num, t->total_bytes_sent);
         log_print("[%d]--- " CLR_RED "ended" CLR_RESET " (0)\n", t->client_num);
         return 1;  /* done */
     }
 
-    log_print("[%d]--- " CLR_CYAN "waiting" CLR_RESET " (%d)\n", t->client_num, t->remaining_time);
+    log_print("[%d]--- " CLR_YELLOW "waiting" CLR_RESET " (%d)\n", t->client_num, t->remaining_time);
     return 0;  /* not done, re-queue */
 }
 
@@ -689,16 +691,19 @@ static void *scheduler_thread(void *arg)
 
         /* ---- Execute the chosen task ---- */
         if (chosen->is_shell) {
-            /* Shell commands run fully without preemption */
+            /* Shell commands run fully without preemption; not tracked in timeline */
             run_shell_command(chosen);
-            timeline_append(chosen->client_num, 0);
             g_last_run_id = chosen->task_id;
             free(chosen);
         } else {
-            /* Program task: run for one quantum */
+            /* Track remaining before quantum so we can compute actual elapsed */
+            int prev_remaining = chosen->remaining_time;
+
             int done = run_program_task(chosen);
-            int elapsed = (chosen->round == 1) ? QUANTUM_FIRST : QUANTUM_REST;
-            timeline_append(chosen->client_num, elapsed);
+
+            /* Actual seconds consumed this quantum */
+            int actual_elapsed = prev_remaining - chosen->remaining_time;
+            timeline_append(chosen->client_num, actual_elapsed);
 
             g_last_run_id = chosen->task_id;
 
@@ -727,6 +732,12 @@ static void *scheduler_thread(void *arg)
 
         pthread_mutex_lock(&g_queue_mutex);
         g_running_task = NULL;
+
+        /* Print the execution timeline when the queue is empty (all tasks done) */
+        if (!g_queue_head) {
+            scheduler_print_timeline();
+        }
+
         pthread_mutex_unlock(&g_queue_mutex);
     }
 
@@ -747,11 +758,38 @@ int scheduler_start(void)
 
 /* ---------------------------------------------------------------------------
  * scheduler_print_timeline() – print the execution summary
+ *
+ * Format (matches screenshot): cyan background, white text for delimiters and
+ * numbers, black text for process labels (P6, P7, ...).
+ * Only prints when program tasks were actually scheduled (count > 0).
  * --------------------------------------------------------------------------- */
 void scheduler_print_timeline(void)
 {
+    if (g_timeline_count == 0) return;  /* nothing to show after shell-only sessions */
+
     pthread_mutex_lock(&g_print_mutex);
-    printf("\n%s\n", g_timeline);
+
+    /* Cyan background, white text for the opening "0)" */
+    printf("\033[46m\033[37m0)");
+
+    for (int i = 0; i < g_timeline_count; i++) {
+        int is_last = (i == g_timeline_count - 1);
+
+        if (is_last) {
+            /* Last entry: no closing ')' — matches expected format */
+            printf("-\033[30mP%d\033[37m-(%d",
+                   g_timeline_entries[i].client_num,
+                   g_timeline_entries[i].cum_time);
+        } else {
+            printf("-\033[30mP%d\033[37m-(%d)",
+                   g_timeline_entries[i].client_num,
+                   g_timeline_entries[i].cum_time);
+        }
+    }
+
+    /* Reset all attributes, then newline */
+    printf("\033[0m\n");
     fflush(stdout);
+
     pthread_mutex_unlock(&g_print_mutex);
 }
